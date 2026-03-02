@@ -46,7 +46,7 @@ SEP   : enabled
 [vphone] VM started in DFU mode — connect with irecovery
 ```
 
-**UNKNOWN:** Whether any serial output appears after "VM started in DFU mode" line. The PL011 serial port is attached to stdout — if AVPBooter/iBSS is running, boot chain text should print here. If silent, the ROM may not be executing properly.
+**CONFIRMED: NO serial output after this line.** Terminal 1 stays on this line with a blinking cursor — no AVPBooter, iBSS, or any boot chain text. The PL011 serial port is attached to stdout but the ROM is completely silent. This means AVPBooter is NOT executing or is crashing before producing any output.
 
 ## What We Tried
 
@@ -107,7 +107,45 @@ sudo killall -HUP usbmuxd 2>/dev/null; .limd/bin/idevice_id -l
 
 **Finding:** Even after signaling usbmuxd to re-scan, no devices appear.
 
-### 7. csrutil status verification
+### 7. AMFI boot-args verification
+
+```
+nvram boot-args
+boot-args	amfi_get_out_of_my_way=1 -v
+```
+
+**Finding:** AMFI is disabled via boot-args. Both SIP and AMFI are off.
+
+### 8. system_profiler USB bus scan
+
+```
+system_profiler SPUSBDataType | grep -iE 'dfu|vresearch|appleusb|vmhost|virtualization'
+(empty output — no matches)
+```
+
+**Finding:** No DFU, vresearch, or VM-related USB devices on any bus.
+
+### 9. ioreg IOUSB plane search
+
+```
+ioreg -p IOUSB -l | grep -iE 'dfu|vresearch|vendor|product|appleusbvmhost'
+(only IOKitDiagnostics dump — no actual DFU/VM USB device entries)
+```
+
+**Finding:** The IOUSB registry plane has no VM-related USB devices. Only the physical Mac's USB controllers and their diagnostics.
+
+### 10. Live log stream (Virtualization + vphone process)
+
+```
+log stream --predicate '(subsystem CONTAINS "Virtualization" OR process CONTAINS "vphone")' \
+  --info --debug --style compact | head -30
+```
+
+**Finding:** Ran for 60+ seconds while VM was in DFU mode. **ZERO Virtualization.framework logs.** The only vphone-cli logs were `com.apple.launchservices` noise from the NSApplication run loop (app name change notifications for unrelated apps like Grammarly, AutoFill). No framework-level VM lifecycle, DFU, or USB-related messages at all.
+
+The vphone-cli process IS alive (PID 1974) and has been running for ~5 minutes. The NSApplication run loop is active. But the Virtualization.framework is completely silent.
+
+### 11. csrutil status verification
 
 ```
 csrutil status
@@ -116,33 +154,68 @@ System Integrity Protection status: disabled.
 
 **Finding:** SIP is fully disabled (more permissive than just `allow-research-guests`). This should not be a blocker.
 
+### 12. git pull conflict on VPhoneVM.swift
+
+```
+git pull
+# → error: Your local changes to the following files would be overwritten by merge:
+#     sources/vphone-cli/VPhoneVM.swift
+# → Aborting
+```
+
+**Finding:** There are uncommitted local changes to `VPhoneVM.swift`. The user built with their LOCAL version, not the latest from `main`. The upstream `main` has been updated (592c3e1..4768822). This could mean the user is running an older or modified VM configuration that doesn't match the latest tested code.
+
+---
+
+## Completed Checks
+
+- [x] Serial output in Terminal 1 — **CONFIRMED SILENT.** No text after "VM started in DFU mode". ROM is not executing.
+- [x] AMFI disabled — confirmed via `nvram boot-args`
+- [x] VM process alive — PID 1974, running 5+ minutes, NSApplication run loop active
+- [x] system_profiler USB — no VM USB devices
+- [x] ioreg IOUSB plane — no VM USB devices
+- [x] Live Virtualization.framework logs — ZERO entries (only LaunchServices noise)
+- [x] SIP disabled — confirmed
+
 ## Not Yet Tried
 
-- [ ] Check serial output in Terminal 1 — is there ANY text after "VM started in DFU mode"? This determines if AVPBooter ROM is actually executing.
-- [ ] Broader process-level logs: `log show --last 60s --predicate 'process == "vphone-cli"' --info --debug`
-- [ ] Confirm VM process is alive: `ps aux | grep vphone`
+- [ ] **Resolve git pull conflict** — `VPhoneVM.swift` has local changes. Need to stash/commit, pull latest `main`, rebuild, and test again. **This is the #1 priority** since the README confirms Mac16,12 + macOS 26.3 is a tested config.
+- [ ] Try `make boot` (non-DFU, GUI mode) — confirms whether the VM boots at all
+- [ ] `git diff sources/vphone-cli/VPhoneVM.swift` — see what local changes exist
 - [ ] Check if macOS 26 changed Virtualization.framework subsystem name for logs
 - [ ] Test on macOS 15 (Sequoia) to rule out macOS 26-specific regression
 - [ ] Check if `_setForceDFU` private API behavior changed on macOS 26
-- [ ] Check if VM needs `VZUSBControllerConfiguration` or similar for USB device exposure on macOS 26
+- [ ] Check if VM needs `VZUSBControllerConfiguration` or similar for USB device exposure
 - [ ] Dump Virtualization.framework private headers on macOS 26 vs 15 to diff USB/DFU-related APIs
-- [ ] Try `make boot` (non-DFU) to see if the VM boots normally at all — would confirm ROM/framework works
-- [ ] Check if AMFI is also disabled (may be needed separately from SIP on macOS 26)
-- [ ] Run `system_profiler SPUSBDataType` during DFU boot to check USB bus
+- [ ] Framework instrumentation: add return value logging around Dynamic private API calls
 
 ## Analysis
 
-### Root Cause Hypotheses (ordered by likelihood)
+### Key Evidence Summary
 
-1. **macOS 26 Virtualization.framework API change** — The tool targets macOS 14+. macOS 26 is two major versions ahead. Apple may have changed how PV=3 DFU guests expose virtual USB to the host. The complete absence of framework logs supports this — it suggests the framework behavior is fundamentally different. Private API `_setForceDFU` may still exist but behave differently.
+| Check | Result | Implication |
+|-------|--------|-------------|
+| Serial output (Terminal 1) | **Silent** — no text after "VM started" | AVPBooter ROM is NOT executing |
+| USB bus (system_profiler) | Empty | No virtual USB device created |
+| IOUSB plane (ioreg) | Empty | No virtual USB device in IOKit |
+| Virtualization.framework logs | **ZERO entries** | Framework may not be actively managing the VM |
+| vphone-cli process | Alive (PID 1974, 5+ min) | Swift-level start() succeeded but guest isn't running |
+| LaunchServices logs | Active (app run loop working) | NSApplication event loop is fine |
+| SIP + AMFI | Both disabled | Not a permissions issue |
+| VPhoneVM.swift | **Has local uncommitted changes** | May be running modified/broken config |
+| git pull | Blocked by local changes | Not on latest tested code |
 
-2. **AVPBooter ROM not executing** — The VM starts (Swift-level `start()` returns successfully) but the actual boot ROM may crash or hang before reaching DFU USB enumeration. Evidence: no serial output confirmation, zero framework logs. If the ROM from Virtualization.framework on macOS 26 is a different version than expected, it may not work with the existing firmware.
+### Root Cause Hypotheses (revised, ordered by likelihood)
 
-3. **Missing USB device configuration** — macOS 26 may require explicit USB controller configuration in `VZVirtualMachineConfiguration` for DFU mode to expose a device. On earlier macOS versions, this may have been implicit for PV=3 guests. The current `VPhoneVM.swift` does not configure any USB controller — only keyboard, touch, serial, storage, network, and SEP.
+1. **Local VPhoneVM.swift changes broke the configuration** — The user has uncommitted local changes to `VPhoneVM.swift` and `git pull` fails because of them. The README confirms Mac16,12 + macOS 26.3 is a tested environment, so the latest `main` should work. The local changes may have broken a critical private API call (e.g., `_setForceDFU`, hardware model setup, or VM configuration). **This is the most likely cause** and the easiest to test — just stash changes, pull, rebuild, and retry.
 
-4. **Private API signature change** — `_setForceDFU`, `_VZPL011SerialPortConfiguration`, or other Dynamic-called private APIs may have changed signatures on macOS 26. The Dynamic library won't crash on missing methods — it silently returns nil/false. The VM "starts" but without actual DFU mode active.
+2. **AVPBooter ROM is wrong version or missing** — The `vm/AVPBooter.vresearch1.bin` file may be from a different macOS version than 26.3. The ROM is copied from `/System/Library/Frameworks/Virtualization.framework/` during `make vm_new`. If the VM directory was created on an older macOS version, the ROM may be incompatible with the current framework. Fix: re-run `make vm_new` to get fresh ROMs.
 
-5. **Entitlement changes** — macOS 26 may require additional entitlements beyond the current 5 in `vphone.entitlements` for PV=3 DFU USB device exposure.
+3. **Private API `_setForceDFU` silently failing** — Dynamic library returns nil/false on method mismatch instead of crashing. The VM "starts" but without DFU mode active, and without DFU mode the guest doesn't enter the USB DFU state. The silent serial output supports this — if DFU isn't set, AVPBooter may try a normal boot and fail because there's no OS on disk.
+
+4. **Virtualization.framework subsystem changed on macOS 26** — The zero framework logs could mean the subsystem name changed from `com.apple.Virtualization` to something else. Less likely to be root cause but would explain the missing diagnostic data.
+
+5. **macOS 26 requires new VM configuration for DFU USB** — New API required that the current code doesn't use. Least likely since README says 26.3 is tested.
 
 ### Key Architectural Context
 
@@ -169,11 +242,60 @@ The patch adds PCC VM device recognition:
 
 This is applied during `make setup_libimobiledevice` and the binary at `.limd/bin/irecovery` is the patched version. This is NOT the issue — the device isn't even reaching the point where libirecovery would need to identify it.
 
-## Recommended Next Steps for Engineering Team
+## Recommended Next Steps (Priority Order)
 
-1. **Immediate:** Check Terminal 1 serial output — determines if ROM is executing at all.
-2. **Quick test:** Run `make boot` (non-DFU, GUI mode) — confirms whether the VM boots at all on macOS 26.
-3. **Compare frameworks:** Dump Virtualization.framework private class/method list on macOS 26 vs macOS 15 — check for `_setForceDFU`, `_VZPL011SerialPortConfiguration`, any new USB-related configurations.
-4. **Test on macOS 15:** If available, test the same VM directory on a macOS 15 machine to confirm the tool works there.
-5. **Framework instrumentation:** Add error checking around all Dynamic private API calls in VPhoneVM.swift — log return values to verify they're not silently failing.
-6. **Check USB controller APIs:** On macOS 26, check if `VZUSBControllerConfiguration` or similar new API exists that's required for DFU USB device exposure.
+### Step 1: Get on latest code (5 min)
+
+The local `VPhoneVM.swift` changes are the most likely culprit. The README says Mac16,12 + macOS 26.3 is tested.
+
+```bash
+cd ~/vphone-cli
+git diff sources/vphone-cli/VPhoneVM.swift   # check what changed
+git stash                                     # save local changes
+git pull                                      # get latest main
+make clean && make build                      # rebuild
+make boot_dfu                                 # test again
+```
+
+If `irecovery -q` works after this, the local changes were the problem. Recover them with `git stash pop` and diff to find the breaking change.
+
+### Step 2: Try GUI boot (2 min)
+
+If Step 1 doesn't fix it, test whether the VM boots at ALL:
+
+```bash
+make boot    # GUI mode, no DFU
+```
+
+- If you see serial output and/or a window → ROM works, DFU-specific issue
+- If still silent → ROM/framework issue regardless of DFU
+
+### Step 3: Recreate VM directory (2 min)
+
+The ROMs are copied from Virtualization.framework during `make vm_new`. If the VM dir was created on an older macOS, the ROMs may be stale:
+
+```bash
+mv vm vm.bak
+make vm_new
+# copy back firmware files from vm.bak if needed
+make boot_dfu
+```
+
+### Step 4: Instrument private API calls
+
+Add logging around every Dynamic call in VPhoneVM.swift to verify none are silently returning nil:
+
+```swift
+let result = Dynamic(config)._setForceDFU(true)
+print("[vphone] _setForceDFU result: \(result)")
+```
+
+### Step 5: Framework header diff
+
+If all above fail, dump private headers:
+
+```bash
+class-dump /System/Library/Frameworks/Virtualization.framework/Virtualization > vz_26.3.h
+# compare with headers from macOS 15 if available
+grep -i 'dfu\|forceDFU\|usb' vz_26.3.h
+```
