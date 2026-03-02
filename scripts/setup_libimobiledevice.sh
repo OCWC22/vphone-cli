@@ -70,25 +70,42 @@ echo ""
 # ── 1. OpenSSL (static) ─────────────────────────────────────────
 
 echo "[1/4] OpenSSL"
-OPENSSL_TAG=$(curl -sS "https://api.github.com/repos/openssl/openssl/releases/latest" \
-    | grep '"tag_name"' | cut -d'"' -f4)
-if [[ ! -d "$SRC/openssl/.git" ]]; then
-    git clone --depth 1 --branch "$OPENSSL_TAG" \
-        "https://github.com/openssl/openssl" "$SRC/openssl" --quiet
+BREW_OPENSSL="$(brew --prefix openssl@3 2>/dev/null || true)"
+if [[ -n "$BREW_OPENSSL" && -d "$BREW_OPENSSL/lib/pkgconfig" ]]; then
+    echo "  Using Homebrew OpenSSL @ $BREW_OPENSSL"
+    # Link Homebrew pkgconfig so downstream libs find OpenSSL
+    mkdir -p "$PREFIX/lib/pkgconfig"
+    for pc in "$BREW_OPENSSL"/lib/pkgconfig/*.pc; do
+        ln -sf "$pc" "$PREFIX/lib/pkgconfig/"
+    done
+    # Link headers and libraries
+    ln -sf "$BREW_OPENSSL/include/openssl" "$PREFIX/include/" 2>/dev/null || \
+        { mkdir -p "$PREFIX/include" && ln -sf "$BREW_OPENSSL/include/openssl" "$PREFIX/include/"; }
+    for f in "$BREW_OPENSSL"/lib/libssl* "$BREW_OPENSSL"/lib/libcrypto*; do
+        ln -sf "$f" "$PREFIX/lib/"
+    done
 else
+    OPENSSL_TAG=$(curl -sS "https://api.github.com/repos/openssl/openssl/releases/latest" \
+        | grep '"tag_name"' | cut -d'"' -f4)
+    [[ -n "$OPENSSL_TAG" ]] || die "Failed to fetch OpenSSL tag from GitHub API (rate limited?)"
+    if [[ ! -d "$SRC/openssl/.git" ]]; then
+        git clone --depth 1 --branch "$OPENSSL_TAG" \
+            "https://github.com/openssl/openssl" "$SRC/openssl" --quiet
+    else
+        cd "$SRC/openssl"
+        git fetch --depth 1 origin tag "$OPENSSL_TAG" --quiet 2>/dev/null || true
+        git checkout "$OPENSSL_TAG" --quiet 2>/dev/null || true
+        git clean -fdx --quiet
+        cd "$SRC"
+    fi
+    echo "  openssl ($OPENSSL_TAG)"
     cd "$SRC/openssl"
-    git fetch --depth 1 origin tag "$OPENSSL_TAG" --quiet 2>/dev/null || true
-    git checkout "$OPENSSL_TAG" --quiet 2>/dev/null || true
-    git clean -fdx --quiet
+    ./config --prefix="$PREFIX" no-shared no-tests \
+        > "$LOG/openssl-configure.log" 2>&1
+    make -j"$NPROC" > "$LOG/openssl-build.log" 2>&1
+    make install_sw > "$LOG/openssl-install.log" 2>&1
     cd "$SRC"
 fi
-echo "  openssl ($OPENSSL_TAG)"
-cd "$SRC/openssl"
-./config --prefix="$PREFIX" no-shared no-tests \
-    > "$LOG/openssl-configure.log" 2>&1
-make -j"$NPROC" > "$LOG/openssl-build.log" 2>&1
-make install_sw > "$LOG/openssl-install.log" 2>&1
-cd "$SRC"
 
 # ── 2. Core libraries ───────────────────────────────────────────
 
