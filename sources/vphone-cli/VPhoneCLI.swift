@@ -61,6 +61,9 @@ struct VPhoneCLI: ParsableCommand {
     @Flag(help: "Run without GUI (headless)")
     var noGraphics: Bool = false
 
+    @Flag(help: "Minimal VM config (no SEP/serial/touch/audio/GDB — for debugging)")
+    var minimal: Bool = false
+
     /// Execution is driven by VPhoneAppDelegate; main.swift calls parseOrExit()
     /// and hands the parsed options to the delegate.
     mutating func run() throws {}

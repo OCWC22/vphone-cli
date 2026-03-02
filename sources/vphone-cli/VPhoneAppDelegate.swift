@@ -74,7 +74,8 @@ class VPhoneAppDelegate: NSObject, NSApplicationDelegate {
             screenWidth: cli.screenWidth,
             screenHeight: cli.screenHeight,
             screenPPI: cli.screenPpi,
-            screenScale: cli.screenScale
+            screenScale: cli.screenScale,
+            minimal: cli.minimal
         )
 
         let vm = try VPhoneVM(options: options)

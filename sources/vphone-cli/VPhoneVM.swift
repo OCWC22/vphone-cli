@@ -20,6 +20,7 @@ class VPhoneVM: NSObject, VZVirtualMachineDelegate {
         var screenHeight: Int = 2796
         var screenPPI: Int = 460
         var screenScale: Double = 3.0
+        var minimal: Bool = false
     }
 
     init(options: Options) throws {
@@ -82,13 +83,15 @@ class VPhoneVM: NSObject, VZVirtualMachineDelegate {
         config.graphicsDevices = [gfx]
 
         // Audio
-        let afg = VZVirtioSoundDeviceConfiguration()
-        let inputAudioStreamConfiguration = VZVirtioSoundDeviceInputStreamConfiguration()
-        let outputAudioStreamConfiguration = VZVirtioSoundDeviceOutputStreamConfiguration()
-        inputAudioStreamConfiguration.source = VZHostAudioInputStreamSource()
-        outputAudioStreamConfiguration.sink = VZHostAudioOutputStreamSink()
-        afg.streams = [inputAudioStreamConfiguration, outputAudioStreamConfiguration]
-        config.audioDevices = [afg]
+        if !options.minimal {
+            let afg = VZVirtioSoundDeviceConfiguration()
+            let inputAudioStreamConfiguration = VZVirtioSoundDeviceInputStreamConfiguration()
+            let outputAudioStreamConfiguration = VZVirtioSoundDeviceOutputStreamConfiguration()
+            inputAudioStreamConfiguration.source = VZHostAudioInputStreamSource()
+            outputAudioStreamConfiguration.sink = VZHostAudioOutputStreamSink()
+            afg.streams = [inputAudioStreamConfiguration, outputAudioStreamConfiguration]
+            config.audioDevices = [afg]
+        }
 
         // Storage
         guard FileManager.default.fileExists(atPath: options.diskURL.path) else {
@@ -112,24 +115,29 @@ class VPhoneVM: NSObject, VZVirtualMachineDelegate {
             print("[vphone] PL011 serial port attached (interactive)")
         }
 
-        // Multi-touch (USB touch screen)
-        if let obj = Dynamic._VZUSBTouchScreenConfiguration().asObject {
-            Dynamic(config)._setMultiTouchDevices([obj])
-            print("[vphone] USB touch screen configured")
-        }
+        if !options.minimal {
+            // Multi-touch (USB touch screen)
+            if let obj = Dynamic._VZUSBTouchScreenConfiguration().asObject {
+                Dynamic(config)._setMultiTouchDevices([obj])
+                print("[vphone] USB touch screen configured")
+            }
 
-        config.keyboards = [VZUSBKeyboardConfiguration()]
+            config.keyboards = [VZUSBKeyboardConfiguration()]
 
-        // GDB debug stub (default init, system-assigned port)
-        Dynamic(config)._setDebugStub(Dynamic._VZGDBDebugStubConfiguration().asObject)
+            // GDB debug stub (default init, system-assigned port)
+            Dynamic(config)._setDebugStub(Dynamic._VZGDBDebugStubConfiguration().asObject)
 
-        // Coprocessors
-        let sepConfig = Dynamic._VZSEPCoprocessorConfiguration(storageURL: options.sepStorageURL)
-        sepConfig.setRomBinaryURL(options.sepRomURL)
-        sepConfig.setDebugStub(Dynamic._VZGDBDebugStubConfiguration().asObject)
-        if let sepObj = sepConfig.asObject {
-            Dynamic(config)._setCoprocessors([sepObj])
-            print("[vphone] SEP coprocessor enabled (storage: \(options.sepStorageURL.path))")
+            // Coprocessors
+            let sepConfig = Dynamic._VZSEPCoprocessorConfiguration(storageURL: options.sepStorageURL)
+            sepConfig.setRomBinaryURL(options.sepRomURL)
+            sepConfig.setDebugStub(Dynamic._VZGDBDebugStubConfiguration().asObject)
+            if let sepObj = sepConfig.asObject {
+                Dynamic(config)._setCoprocessors([sepObj])
+                print("[vphone] SEP coprocessor enabled (storage: \(options.sepStorageURL.path))")
+            }
+        } else {
+            config.keyboards = [VZUSBKeyboardConfiguration()]
+            print("[vphone] MINIMAL MODE — skipped: touch, audio, GDB, SEP")
         }
 
         // Validate
