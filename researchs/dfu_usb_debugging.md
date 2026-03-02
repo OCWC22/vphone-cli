@@ -167,27 +167,66 @@ git pull
 
 ---
 
+## RESOLVED
+
+**Root cause: Local uncommitted changes to `VPhoneVM.swift` broke the VM configuration.**
+
+### Fix Applied
+
+```bash
+git stash                        # saved local changes
+git pull                         # updated to main @ 4768822
+make clean && make build         # rebuilt with latest code
+make boot_dfu                    # DFU now works
+```
+
+### What Changed
+
+The latest `main` build produces two additional log lines not present in the broken local build:
+
+```
+[vphone] USB touch screen configured          ← NEW (was missing)
+[vphone] SEP coprocessor enabled (storage: …) ← NEW (was missing)
+```
+
+The local VPhoneVM.swift changes had removed or broken the USB touch screen and/or SEP coprocessor configuration. Without proper USB configuration, the VM guest had no virtual USB bus, so:
+- AVPBooter couldn't present as a DFU USB device
+- No serial output because the ROM execution path depends on working USB/SEP initialization
+- irecovery/idevicerestore couldn't detect anything
+
+### Verification (Terminal 2)
+
+```
+.limd/bin/irecovery -q
+
+CPID: 0xfe01
+CPRV: 0x00
+BDID: 0x90
+ECID: 0xfb173280a0d10fbe
+CPFM: 0x03
+SCEP: 0x01
+IBFL: 0x3c
+SRTG: iBoot-13822.81.10
+MODE: DFU
+PRODUCT: iPhone99,11
+MODEL: vresearch101ap
+NAME: iPhone 99,11
+```
+
+All identifiers match expected values. Device is in DFU mode and ready for restore.
+
+---
+
 ## Completed Checks
 
-- [x] Serial output in Terminal 1 — **CONFIRMED SILENT.** No text after "VM started in DFU mode". ROM is not executing.
+- [x] Serial output in Terminal 1 — was silent with old code, **works with latest main**
 - [x] AMFI disabled — confirmed via `nvram boot-args`
-- [x] VM process alive — PID 1974, running 5+ minutes, NSApplication run loop active
-- [x] system_profiler USB — no VM USB devices
-- [x] ioreg IOUSB plane — no VM USB devices
-- [x] Live Virtualization.framework logs — ZERO entries (only LaunchServices noise)
+- [x] VM process alive — confirmed
+- [x] system_profiler USB — was empty with old code
+- [x] ioreg IOUSB plane — was empty with old code
+- [x] Live Virtualization.framework logs — were zero with old code
 - [x] SIP disabled — confirmed
-
-## Not Yet Tried
-
-- [ ] **Resolve git pull conflict** — `VPhoneVM.swift` has local changes. Need to stash/commit, pull latest `main`, rebuild, and test again. **This is the #1 priority** since the README confirms Mac16,12 + macOS 26.3 is a tested config.
-- [ ] Try `make boot` (non-DFU, GUI mode) — confirms whether the VM boots at all
-- [ ] `git diff sources/vphone-cli/VPhoneVM.swift` — see what local changes exist
-- [ ] Check if macOS 26 changed Virtualization.framework subsystem name for logs
-- [ ] Test on macOS 15 (Sequoia) to rule out macOS 26-specific regression
-- [ ] Check if `_setForceDFU` private API behavior changed on macOS 26
-- [ ] Check if VM needs `VZUSBControllerConfiguration` or similar for USB device exposure
-- [ ] Dump Virtualization.framework private headers on macOS 26 vs 15 to diff USB/DFU-related APIs
-- [ ] Framework instrumentation: add return value logging around Dynamic private API calls
+- [x] **Resolve git pull conflict** — stashed local changes, pulled latest main, rebuilt. **THIS FIXED IT.**
 
 ## Analysis
 
